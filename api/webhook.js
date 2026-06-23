@@ -150,6 +150,11 @@ bot.callbackQuery(['collage_grid_2', 'collage_grid_3', 'collage_grid_4', 'collag
     // Send status indicator
     const statusMessage = await ctx.reply("⏳ Downloading and stitching your photos together... please wait.");
 
+    // Clear user queue immediately to prevent concurrent retries from reusing the queue,
+    // and to allow the user to queue new images without them being deleted or mixed up.
+    await db.clearImages(userId);
+    await db.clearLastMessageId(userId);
+
     // Generate collage buffers
     const collageBuffers = await createCollageBatches(imageUrls, gridDim);
 
@@ -192,10 +197,6 @@ bot.callbackQuery(['collage_grid_2', 'collage_grid_3', 'collage_grid_4', 'collag
 
     // Delete status message
     await ctx.api.deleteMessage(ctx.chat.id, statusMessage.message_id).catch(() => {});
-
-    // Reset user queue and clear menu tracking
-    await db.clearImages(userId);
-    await db.clearLastMessageId(userId);
 
   } catch (error) {
     console.error("Error generating collage:", error);
