@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { Bot, webhookCallback, InlineKeyboard, InputFile } = require('grammy');
 const db = require('../lib/db');
-const { createCollage } = require('../lib/collage');
+const { createCollageBatches } = require('../lib/collage');
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
@@ -17,7 +17,7 @@ bot.command(['start', 'help'], async (ctx) => {
     `Send me **2 or more images** as photos. I will combine them into a beautiful collage!\n\n` +
     `*How to use:*\n` +
     `1. Send images to me one by one. I'll add them to your queue.\n` +
-    `2. Click **Horizontal Collage** or **Vertical Collage** to merge them.\n` +
+    `2. Choose a grid size (e.g., **2x2**, **3x3**, up to **6x6**) below to generate your collage.\n` +
     `3. Click **Clear & Restart** if you want to clear your current queue and start fresh.\n\n` +
     `_Ready when you are! Send me your first photo._`,
     { parse_mode: 'Markdown' }
@@ -31,11 +31,15 @@ bot.on('message:photo', async (ctx) => {
 
     // Check if the user already has too many images
     const existingImages = await db.getImages(userId);
-    if (existingImages.length >= 8) {
+    if (existingImages.length >= 100) {
       const keyboard = new InlineKeyboard()
-        .text("⬅️ Horizontal Collage", "collage_horizontal")
-        .text("⬇️ Vertical Collage", "collage_vertical")
+        .text("🖼️ 2x2 Grid", "collage_grid_2")
+        .text("🖼️ 3x3 Grid", "collage_grid_3")
         .row()
+        .text("🖼️ 4x4 Grid", "collage_grid_4")
+        .text("🖼️ 5x5 Grid", "collage_grid_5")
+        .row()
+        .text("🖼️ 6x6 Grid", "collage_grid_6")
         .text("❌ Clear & Restart", "collage_clear");
 
       const lastMsgId = await db.getLastMessageId(userId);
@@ -44,8 +48,8 @@ bot.on('message:photo', async (ctx) => {
       }
 
       const sentMsg = await ctx.reply(
-        `⚠️ *Queue Limit Reached (Max: 8 photos)*\n\n` +
-        `You already have 8 photos in your queue. Please generate your collage now, or click **Clear & Restart** to start fresh.`,
+        `⚠️ *Queue Limit Reached (Max: 100 photos)*\n\n` +
+        `You already have 100 photos in your queue. Please generate your collage now, or click **Clear & Restart** to start fresh.`,
         {
           reply_markup: keyboard,
           parse_mode: 'Markdown'
@@ -57,22 +61,31 @@ bot.on('message:photo', async (ctx) => {
     }
 
     // Telegram sends photos in an array of different sizes.
-    // The last element is the highest resolution version.
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    // Choose the second largest size (if available) to optimize download speed and memory usage.
+    const photoIdx = ctx.message.photo.length > 2 ? ctx.message.photo.length - 2 : ctx.message.photo.length - 1;
+    const photo = ctx.message.photo[photoIdx];
     const fileId = photo.file_id;
 
-    // Save to database
-    await db.addImage(userId, fileId);
+    // Resolve download URL immediately to avoid Vercel serverless execution timeout during collage generation
+    const file = await ctx.api.getFile(fileId);
+    const downloadUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+
+    // Save download URL to database
+    await db.addImage(userId, downloadUrl);
 
     // Retrieve updated list to count
     const images = await db.getImages(userId);
     const count = images.length;
 
-    // Inline buttons for controls
+    // Inline buttons for controls (Grid options from 2x2 to 6x6)
     const keyboard = new InlineKeyboard()
-      .text("⬅️ Horizontal Collage", "collage_horizontal")
-      .text("⬇️ Vertical Collage", "collage_vertical")
+      .text("🖼️ 2x2 Grid", "collage_grid_2")
+      .text("🖼️ 3x3 Grid", "collage_grid_3")
       .row()
+      .text("🖼️ 4x4 Grid", "collage_grid_4")
+      .text("🖼️ 5x5 Grid", "collage_grid_5")
+      .row()
+      .text("🖼️ 6x6 Grid", "collage_grid_6")
       .text("❌ Clear & Restart", "collage_clear");
 
     // Delete the previous menu message to keep the chat clean and avoid repeats
@@ -115,15 +128,15 @@ bot.callbackQuery('collage_clear', async (ctx) => {
   }
 });
 
-// Handle layout generation
-bot.callbackQuery(['collage_horizontal', 'collage_vertical'], async (ctx) => {
+// Handle grid layout generation
+bot.callbackQuery(['collage_grid_2', 'collage_grid_3', 'collage_grid_4', 'collage_grid_5', 'collage_grid_6'], async (ctx) => {
   const userId = ctx.from.id;
-  const action = ctx.callbackQuery.data;
-  const direction = action === 'collage_horizontal' ? 'horizontal' : 'vertical';
+  const action = ctx.callbackQuery.data; // e.g. "collage_grid_4"
+  const gridDim = parseInt(action.split('_')[2], 10);
 
   try {
-    const fileIds = await db.getImages(userId);
-    if (!fileIds || fileIds.length < 2) {
+    const imageUrls = await db.getImages(userId);
+    if (!imageUrls || imageUrls.length < 2) {
       await ctx.answerCallbackQuery({
         text: "Please send at least 2 photos first!",
         show_alert: true
@@ -137,26 +150,45 @@ bot.callbackQuery(['collage_horizontal', 'collage_vertical'], async (ctx) => {
     // Send status indicator
     const statusMessage = await ctx.reply("⏳ Downloading and stitching your photos together... please wait.");
 
-    // Retrieve file paths/URLs from Telegram
-    const imageUrls = await Promise.all(
-      fileIds.map(async (fileId) => {
-        const file = await ctx.api.getFile(fileId);
-        return `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-      })
-    );
+    // Generate collage buffers
+    const collageBuffers = await createCollageBatches(imageUrls, gridDim);
 
-    // Create collage buffer using Jimp
-    const collageBuffer = await createCollage(imageUrls, direction);
+    if (collageBuffers.length > 1) {
+      // Send as photo album(s) (max 10 items per media group)
+      const photoMediaList = collageBuffers.map((buffer, idx) => ({
+        type: 'photo',
+        media: new InputFile(buffer, `collage_${gridDim}x${gridDim}_part${idx + 1}.jpg`),
+        caption: `Part ${idx + 1} of ${collageBuffers.length} (${gridDim}x${gridDim} Grid)`
+      }));
 
-    // 1. Send as Photo (for quick inline chat preview)
-    await ctx.replyWithPhoto(new InputFile(collageBuffer, `collage_${direction}.jpg`), {
-      caption: `🎉 Quick preview of your ${direction} collage (${fileIds.length} photos):`,
-    });
+      for (let i = 0; i < photoMediaList.length; i += 10) {
+        const chunk = photoMediaList.slice(i, i + 10);
+        await ctx.replyWithMediaGroup(chunk);
+      }
 
-    // 2. Send as Document (forces Telegram to send it uncompressed, keeping text extremely sharp!)
-    await ctx.replyWithDocument(new InputFile(collageBuffer, `collage_${direction}_highres.jpg`), {
-      caption: `💾 here is the Full HD (uncompressed) file for reading fine details and small text!`,
-    });
+      // Send as document album(s) (max 10 items per media group)
+      const docMediaList = collageBuffers.map((buffer, idx) => ({
+        type: 'document',
+        media: new InputFile(buffer, `collage_${gridDim}x${gridDim}_part${idx + 1}_highres.jpg`),
+        caption: `High-res Part ${idx + 1}`
+      }));
+
+      for (let i = 0; i < docMediaList.length; i += 10) {
+        const chunk = docMediaList.slice(i, i + 10);
+        await ctx.replyWithMediaGroup(chunk);
+      }
+    } else if (collageBuffers.length === 1) {
+      // Single collage output: send photo and document individually for best presentation
+      const buffer = collageBuffers[0];
+      
+      await ctx.replyWithPhoto(new InputFile(buffer, `collage_${gridDim}x${gridDim}.jpg`), {
+        caption: `🎉 Quick preview of your ${gridDim}x${gridDim} collage (${imageUrls.length} photos):`,
+      });
+
+      await ctx.replyWithDocument(new InputFile(buffer, `collage_${gridDim}x${gridDim}_highres.jpg`), {
+        caption: `💾 Here is the Full HD (uncompressed) file!`,
+      });
+    }
 
     // Delete status message
     await ctx.api.deleteMessage(ctx.chat.id, statusMessage.message_id).catch(() => {});
@@ -174,7 +206,7 @@ bot.callbackQuery(['collage_horizontal', 'collage_vertical'], async (ctx) => {
 
     await ctx.reply(
       "❌ *Error generating your collage.*\n\n" +
-      "Make sure all uploaded photos are fresh and try again with fewer images (we have reset your queue to prevent further errors).",
+      "Make sure all uploaded photos are fresh and try again (we have reset your queue to prevent further errors).",
       { parse_mode: 'Markdown' }
     );
   }

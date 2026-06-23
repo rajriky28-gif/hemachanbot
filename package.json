@@ -11,7 +11,7 @@
     "@upstash/redis": "^1.28.4",
     "dotenv": "^16.4.5",
     "grammy": "^1.21.1",
-    "jimp": "^0.16.13"
+    "sharp": "^0.35.2"
   },
   "engines": {
     "node": ">=18"
