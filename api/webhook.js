@@ -32,9 +32,8 @@ bot.on('message:photo', async (ctx) => {
 
 
     // Telegram sends photos in an array of different sizes.
-    // Choose the second largest size (if available) to optimize download speed and memory usage.
-    const photoIdx = ctx.message.photo.length > 2 ? ctx.message.photo.length - 2 : ctx.message.photo.length - 1;
-    const photo = ctx.message.photo[photoIdx];
+    // Select the highest resolution version available to maximize image quality.
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
     const fileId = photo.file_id;
 
     // Resolve download URL immediately to avoid Vercel serverless execution timeout during collage generation
