@@ -29,36 +29,7 @@ bot.on('message:photo', async (ctx) => {
   try {
     const userId = ctx.from.id;
 
-    // Check if the user already has too many images
-    const existingImages = await db.getImages(userId);
-    if (existingImages.length >= 100) {
-      const keyboard = new InlineKeyboard()
-        .text("🖼️ 2x2 Grid", "collage_grid_2")
-        .text("🖼️ 3x3 Grid", "collage_grid_3")
-        .row()
-        .text("🖼️ 4x4 Grid", "collage_grid_4")
-        .text("🖼️ 5x5 Grid", "collage_grid_5")
-        .row()
-        .text("🖼️ 6x6 Grid", "collage_grid_6")
-        .text("❌ Clear & Restart", "collage_clear");
 
-      const lastMsgId = await db.getLastMessageId(userId);
-      if (lastMsgId) {
-        await ctx.api.deleteMessage(ctx.chat.id, lastMsgId).catch(() => {});
-      }
-
-      const sentMsg = await ctx.reply(
-        `⚠️ *Queue Limit Reached (Max: 100 photos)*\n\n` +
-        `You already have 100 photos in your queue. Please generate your collage now, or click **Clear & Restart** to start fresh.`,
-        {
-          reply_markup: keyboard,
-          parse_mode: 'Markdown'
-        }
-      );
-
-      await db.setLastMessageId(userId, sentMsg.message_id);
-      return;
-    }
 
     // Telegram sends photos in an array of different sizes.
     // Choose the second largest size (if available) to optimize download speed and memory usage.
