@@ -47,15 +47,23 @@ bot.on('message:photo', async (ctx) => {
       .row()
       .text("❌ Clear & Restart", "collage_clear");
 
-    await ctx.reply(
+    // Delete the previous menu message to keep the chat clean and avoid repeats
+    const lastMsgId = await db.getLastMessageId(userId);
+    if (lastMsgId) {
+      await ctx.api.deleteMessage(ctx.chat.id, lastMsgId).catch(() => {});
+    }
+
+    const sentMsg = await ctx.reply(
       `✅ Photo added! (Current Queue: *${count}* ${count === 1 ? 'photo' : 'photos'})\n\n` +
       `Send more photos, or choose a layout below to generate your collage:`,
       {
         reply_markup: keyboard,
-        parse_mode: 'Markdown',
-        reply_to_message_id: ctx.message.message_id
+        parse_mode: 'Markdown'
       }
     );
+
+    // Save the new menu message ID
+    await db.setLastMessageId(userId, sentMsg.message_id);
   } catch (error) {
     console.error("Error receiving photo:", error);
     await ctx.reply("❌ Sorry, something went wrong while saving your photo. Please try again.");
@@ -67,6 +75,7 @@ bot.callbackQuery('collage_clear', async (ctx) => {
   const userId = ctx.from.id;
   try {
     await db.clearImages(userId);
+    await db.clearLastMessageId(userId);
     await ctx.answerCallbackQuery({ text: "Queue cleared!" });
     await ctx.editMessageText(
       "❌ Your collage queue has been cleared! Send some new photos to start fresh."
@@ -111,16 +120,22 @@ bot.callbackQuery(['collage_horizontal', 'collage_vertical'], async (ctx) => {
     // Create collage buffer using Jimp
     const collageBuffer = await createCollage(imageUrls, direction);
 
-    // Send the stitched image back
+    // 1. Send as Photo (for quick inline chat preview)
     await ctx.replyWithPhoto(new InputFile(collageBuffer, `collage_${direction}.jpg`), {
-      caption: `🎉 Here is your ${direction} collage of ${fileIds.length} photos!`,
+      caption: `🎉 Quick preview of your ${direction} collage (${fileIds.length} photos):`,
+    });
+
+    // 2. Send as Document (forces Telegram to send it uncompressed, keeping text extremely sharp!)
+    await ctx.replyWithDocument(new InputFile(collageBuffer, `collage_${direction}_highres.jpg`), {
+      caption: `💾 here is the Full HD (uncompressed) file for reading fine details and small text!`,
     });
 
     // Delete status message
     await ctx.api.deleteMessage(ctx.chat.id, statusMessage.message_id).catch(() => {});
 
-    // Reset user queue
+    // Reset user queue and clear menu tracking
     await db.clearImages(userId);
+    await db.clearLastMessageId(userId);
 
   } catch (error) {
     console.error("Error generating collage:", error);
