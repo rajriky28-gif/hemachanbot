@@ -28,6 +28,34 @@ bot.command(['start', 'help'], async (ctx) => {
 bot.on('message:photo', async (ctx) => {
   try {
     const userId = ctx.from.id;
+
+    // Check if the user already has too many images
+    const existingImages = await db.getImages(userId);
+    if (existingImages.length >= 8) {
+      const keyboard = new InlineKeyboard()
+        .text("⬅️ Horizontal Collage", "collage_horizontal")
+        .text("⬇️ Vertical Collage", "collage_vertical")
+        .row()
+        .text("❌ Clear & Restart", "collage_clear");
+
+      const lastMsgId = await db.getLastMessageId(userId);
+      if (lastMsgId) {
+        await ctx.api.deleteMessage(ctx.chat.id, lastMsgId).catch(() => {});
+      }
+
+      const sentMsg = await ctx.reply(
+        `⚠️ *Queue Limit Reached (Max: 8 photos)*\n\n` +
+        `You already have 8 photos in your queue. Please generate your collage now, or click **Clear & Restart** to start fresh.`,
+        {
+          reply_markup: keyboard,
+          parse_mode: 'Markdown'
+        }
+      );
+
+      await db.setLastMessageId(userId, sentMsg.message_id);
+      return;
+    }
+
     // Telegram sends photos in an array of different sizes.
     // The last element is the highest resolution version.
     const photo = ctx.message.photo[ctx.message.photo.length - 1];
@@ -139,7 +167,16 @@ bot.callbackQuery(['collage_horizontal', 'collage_vertical'], async (ctx) => {
 
   } catch (error) {
     console.error("Error generating collage:", error);
-    await ctx.reply("❌ Error generating your collage. Make sure all images are valid photos and try again.");
+    
+    // Clear user queue so they don't get stuck in a broken loop
+    await db.clearImages(userId).catch(() => {});
+    await db.clearLastMessageId(userId).catch(() => {});
+
+    await ctx.reply(
+      "❌ *Error generating your collage.*\n\n" +
+      "Make sure all uploaded photos are fresh and try again with fewer images (we have reset your queue to prevent further errors).",
+      { parse_mode: 'Markdown' }
+    );
   }
 });
 
