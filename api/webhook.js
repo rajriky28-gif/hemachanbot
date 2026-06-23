@@ -139,4 +139,13 @@ bot.on('message', async (ctx) => {
 });
 
 // Export webhook callback compatible with Vercel serverless environment
-module.exports = webhookCallback(bot, 'http');
+const handleWebhook = webhookCallback(bot, 'http');
+
+module.exports = async (req, res) => {
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<h1>📸 Collage Maker Bot is running!</h1><p>Configure this URL as a webhook in Telegram to start using the bot.</p>');
+    return;
+  }
+  return handleWebhook(req, res);
+};
