@@ -1,0 +1,19 @@
+{
+  "name": "telegram-collage-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot to create collages from uploaded images, hosted on Vercel.",
+  "main": "api/webhook.js",
+  "scripts": {
+    "start": "node api/webhook.js",
+    "test-collage": "node scratch/test-collage.js"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.28.4",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.21.1",
+    "jimp": "^0.16.13"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

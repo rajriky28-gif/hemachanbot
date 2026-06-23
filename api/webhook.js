@@ -1,0 +1,142 @@
+require('dotenv').config();
+const { Bot, webhookCallback, InlineKeyboard, InputFile } = require('grammy');
+const db = require('../lib/db');
+const { createCollage } = require('../lib/collage');
+
+const token = process.env.TELEGRAM_BOT_TOKEN;
+if (!token) {
+  console.warn("WARNING: TELEGRAM_BOT_TOKEN environment variable is not defined!");
+}
+
+const bot = new Bot(token || 'dummy_token_for_compilation');
+
+// Handle start and help commands
+bot.command(['start', 'help'], async (ctx) => {
+  await ctx.reply(
+    `📸 *Collage Maker Bot* 📸\n\n` +
+    `Send me **2 or more images** as photos. I will combine them into a beautiful collage!\n\n` +
+    `*How to use:*\n` +
+    `1. Send images to me one by one. I'll add them to your queue.\n` +
+    `2. Click **Horizontal Collage** or **Vertical Collage** to merge them.\n` +
+    `3. Click **Clear & Restart** if you want to clear your current queue and start fresh.\n\n` +
+    `_Ready when you are! Send me your first photo._`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// Handle incoming photos
+bot.on('message:photo', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    // Telegram sends photos in an array of different sizes.
+    // The last element is the highest resolution version.
+    const photo = ctx.message.photo[ctx.message.photo.length - 1];
+    const fileId = photo.file_id;
+
+    // Save to database
+    await db.addImage(userId, fileId);
+
+    // Retrieve updated list to count
+    const images = await db.getImages(userId);
+    const count = images.length;
+
+    // Inline buttons for controls
+    const keyboard = new InlineKeyboard()
+      .text("⬅️ Horizontal Collage", "collage_horizontal")
+      .text("⬇️ Vertical Collage", "collage_vertical")
+      .row()
+      .text("❌ Clear & Restart", "collage_clear");
+
+    await ctx.reply(
+      `✅ Photo added! (Current Queue: *${count}* ${count === 1 ? 'photo' : 'photos'})\n\n` +
+      `Send more photos, or choose a layout below to generate your collage:`,
+      {
+        reply_markup: keyboard,
+        parse_mode: 'Markdown',
+        reply_to_message_id: ctx.message.message_id
+      }
+    );
+  } catch (error) {
+    console.error("Error receiving photo:", error);
+    await ctx.reply("❌ Sorry, something went wrong while saving your photo. Please try again.");
+  }
+});
+
+// Handle clear button
+bot.callbackQuery('collage_clear', async (ctx) => {
+  const userId = ctx.from.id;
+  try {
+    await db.clearImages(userId);
+    await ctx.answerCallbackQuery({ text: "Queue cleared!" });
+    await ctx.editMessageText(
+      "❌ Your collage queue has been cleared! Send some new photos to start fresh."
+    );
+  } catch (error) {
+    console.error("Error clearing queue:", error);
+    await ctx.answerCallbackQuery({ text: "Error clearing queue" });
+    await ctx.reply("❌ Error resetting your queue.");
+  }
+});
+
+// Handle layout generation
+bot.callbackQuery(['collage_horizontal', 'collage_vertical'], async (ctx) => {
+  const userId = ctx.from.id;
+  const action = ctx.callbackQuery.data;
+  const direction = action === 'collage_horizontal' ? 'horizontal' : 'vertical';
+
+  try {
+    const fileIds = await db.getImages(userId);
+    if (!fileIds || fileIds.length < 2) {
+      await ctx.answerCallbackQuery({
+        text: "Please send at least 2 photos first!",
+        show_alert: true
+      });
+      return;
+    }
+
+    // Acknowledge callback immediately to stop the loading spinner
+    await ctx.answerCallbackQuery({ text: "Stitching photos..." });
+
+    // Send status indicator
+    const statusMessage = await ctx.reply("⏳ Downloading and stitching your photos together... please wait.");
+
+    // Retrieve file paths/URLs from Telegram
+    const imageUrls = await Promise.all(
+      fileIds.map(async (fileId) => {
+        const file = await ctx.api.getFile(fileId);
+        return `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+      })
+    );
+
+    // Create collage buffer using Jimp
+    const collageBuffer = await createCollage(imageUrls, direction);
+
+    // Send the stitched image back
+    await ctx.replyWithPhoto(new InputFile(collageBuffer, `collage_${direction}.jpg`), {
+      caption: `🎉 Here is your ${direction} collage of ${fileIds.length} photos!`,
+    });
+
+    // Delete status message
+    await ctx.api.deleteMessage(ctx.chat.id, statusMessage.message_id).catch(() => {});
+
+    // Reset user queue
+    await db.clearImages(userId);
+
+  } catch (error) {
+    console.error("Error generating collage:", error);
+    await ctx.reply("❌ Error generating your collage. Make sure all images are valid photos and try again.");
+  }
+});
+
+// Generic fallbacks for text / other message types
+bot.on('message:text', async (ctx) => {
+  if (ctx.message.text.startsWith('/')) return; // let commands handle themselves
+  await ctx.reply("⚠️ I'm a collage helper. Please send me photos directly so I can compile them!");
+});
+
+bot.on('message', async (ctx) => {
+  await ctx.reply("⚠️ Please send images as photos (compressed files) so I can add them to the collage.");
+});
+
+// Export webhook callback compatible with Vercel serverless environment
+module.exports = webhookCallback(bot, 'http');
